@@ -205,6 +205,16 @@ export interface WeeklyBlockGroup {
   blocks: FiveHourBlock[];
   // Peak single-block percent in the week.
   peakPercent: number;
+  // Tokens counted toward the weekly (7-day) limit this week.
+  weeklyTokens: number;
+  // Community-measured 7-day ceiling for this week's dominant plan (unofficial).
+  weeklyLimit: number;
+  // Estimated fraction of the weekly limit consumed (0–100).
+  weeklyPercent: number;
+  // Whether weeklyPercent was set from the live /usage seven_day utilisation.
+  weeklyPercentIsLive: boolean;
+  // Plan used to pick weeklyLimit ('custom'/'unknown' when not inferable).
+  weeklyPlan: 'pro' | 'max5x' | 'max20x' | 'custom' | 'unknown';
 }
 
 // A detected transition from one plan to another, inferred from usage patterns.

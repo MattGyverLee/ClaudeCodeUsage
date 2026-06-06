@@ -47,6 +47,18 @@ function planCeiling(plan: 'pro' | 'max5x' | 'max20x', atMs: number): number {
   return era[plan];
 }
 
+// Community-measured 7-day ("weekly") token ceilings. The few open-source
+// trackers that bother with the weekly window (e.g. jeck00119/claude-codex-
+// switcher) model it as roughly 7× the 5-hour ceiling, so we do the same.
+// Anthropic publishes neither an absolute number nor a fixed multiplier, so
+// this is an estimate — treat it as a rough gauge, not an exact budget.
+const WEEKLY_MULTIPLIER = 7;
+
+/** Return the estimated 7-day token ceiling for a given plan at a given time. */
+function weeklyCeiling(plan: 'pro' | 'max5x' | 'max20x', atMs: number): number {
+  return planCeiling(plan, atMs) * WEEKLY_MULTIPLIER;
+}
+
 /** Infer which plan tier a block belongs to based on its token usage. If the
  *  usage exceeds the lower plan's ceiling we know the account is on the higher
  *  plan (because users reported they never hit 100%). If the usage fits within
@@ -1057,16 +1069,69 @@ export class ClaudeDataLoader {
       byWeek[key].blocks.push(block);
     }
 
+    // The current calendar week is the one we may anchor to the live 7-day
+    // utilisation. Compute its Monday once for comparison.
+    const nowDate = new Date();
+    const nowDay = nowDate.getDay();
+    const nowDiffToMonday = nowDay === 0 ? -6 : 1 - nowDay;
+    const currentMonday = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate() + nowDiffToMonday);
+    currentMonday.setHours(0, 0, 0, 0);
+    const liveWeekUtil = usageLimits?.seven_day?.utilization;
+
     const groups: WeeklyBlockGroup[] = Object.entries(byWeek).map(([weekKey, { weekStart, blocks: weekBlocks }]) => {
       const data = this.emptyUsageData();
       let peakPercent = 0;
+      let weeklyTokens = 0;
+      // Pick the week's dominant plan: the highest tier any block in the week
+      // was assigned, so the weekly ceiling reflects the strongest plan active.
+      const planRank: Record<string, number> = { unknown: 0, pro: 1, max5x: 2, max20x: 3, custom: 4 };
+      let weeklyPlan: WeeklyBlockGroup['weeklyPlan'] = 'unknown';
       for (const b of weekBlocks) {
         this.addUsageData(data, b.data);
         peakPercent = Math.max(peakPercent, b.percent);
+        weeklyTokens += b.limitTokens;
+        if (planRank[b.detectedPlan] > planRank[weeklyPlan]) {
+          weeklyPlan = b.detectedPlan;
+        }
       }
+
+      // Weekly ceiling from the dominant plan (7× the 5-hour ceiling). For
+      // 'custom'/'unknown' we fall back to 7× the custom 5h limit when set,
+      // otherwise leave the limit at the tokens used (so percent caps at 100).
+      let weeklyLimit: number;
+      if (weeklyPlan === 'pro' || weeklyPlan === 'max5x' || weeklyPlan === 'max20x') {
+        weeklyLimit = weeklyCeiling(weeklyPlan, weekStart.getTime());
+      } else if (customLimit > 0) {
+        weeklyLimit = customLimit * WEEKLY_MULTIPLIER;
+      } else {
+        weeklyLimit = weeklyTokens || 1;
+      }
+      let weeklyPercent = weeklyLimit > 0 ? (weeklyTokens / weeklyLimit) * 100 : 0;
+      let weeklyPercentIsLive = false;
+
+      // Anchor the *current* week to the live 7-day utilisation when available.
+      if (weekStart.getTime() === currentMonday.getTime() && typeof liveWeekUtil === 'number' && liveWeekUtil > 0) {
+        weeklyPercent = liveWeekUtil;
+        weeklyPercentIsLive = true;
+        if (weeklyTokens > 0) {
+          weeklyLimit = Math.round(weeklyTokens / (liveWeekUtil / 100));
+        }
+      }
+
       // Newest block first within the week.
       weekBlocks.sort((a, b) => b.start.getTime() - a.start.getTime());
-      return { weekStart, weekKey, data, blocks: weekBlocks, peakPercent };
+      return {
+        weekStart,
+        weekKey,
+        data,
+        blocks: weekBlocks,
+        peakPercent,
+        weeklyTokens,
+        weeklyLimit,
+        weeklyPercent,
+        weeklyPercentIsLive,
+        weeklyPlan,
+      };
     });
 
     return groups.sort((a, b) => b.weekStart.getTime() - a.weekStart.getTime());

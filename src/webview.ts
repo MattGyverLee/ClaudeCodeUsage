@@ -1325,6 +1325,12 @@ export class UsageWebviewProvider {
         '<span class="week-peak-label">' + this.escapeHtml(t.peakWindow) + '</span>' +
         this.percentBar(week.peakPercent, false) +
         '</div>' +
+        '<div class="week-peak" title="' + this.escapeHtml(
+          I18n.formatNumber(week.weeklyTokens) + ' / ' + I18n.formatNumber(week.weeklyLimit)
+        ) + '">' +
+        '<span class="week-peak-label">' + this.escapeHtml(t.weeklyLimit) + '</span>' +
+        this.percentBar(week.weeklyPercent, week.weeklyPercentIsLive) +
+        '</div>' +
         '</div>' +
         '<div class="daily-table-container">' +
         '<table class="daily-table">' +

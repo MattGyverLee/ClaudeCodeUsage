@@ -92,6 +92,7 @@ export interface Translations {
     weekOf: string;
     fiveHourWindow: string;
     peakWindow: string;
+    weeklyLimit: string;
     window: string;
     percentOfLimit: string;
     planCeiling: string;
@@ -212,6 +213,7 @@ const translations: Record<SupportedLanguage, Translations> = {
       weekOf: 'Week of',
       fiveHourWindow: '5h window',
       peakWindow: 'Peak window',
+      weeklyLimit: 'Weekly limit (est.)',
       window: 'Window',
       percentOfLimit: '% of limit (est.)',
       status: 'Status',
@@ -334,6 +336,7 @@ const translations: Record<SupportedLanguage, Translations> = {
       weekOf: "Woche vom",
       fiveHourWindow: "5h-Fenster",
       peakWindow: "Spitzenfenster",
+      weeklyLimit: "Wochenlimit (geschätzt)",
       window: "Fenster",
       percentOfLimit: "% des Limits (geschätzt)",
       status: "Status",
@@ -453,6 +456,7 @@ const translations: Record<SupportedLanguage, Translations> = {
       weekOf: '本週起於',
       fiveHourWindow: '5 小時視窗',
       peakWindow: '高峰視窗',
+      weeklyLimit: '每週上限（估計）',
       window: '視窗',
       percentOfLimit: '限額百分比（估計）',
       status: '狀態',
@@ -572,6 +576,7 @@ const translations: Record<SupportedLanguage, Translations> = {
       weekOf: '本周始于',
       fiveHourWindow: '5 小时窗口',
       peakWindow: '峰值窗口',
+      weeklyLimit: '每周上限（估计）',
       window: '窗口',
       percentOfLimit: '限额百分比（估计）',
       status: '状态',
@@ -692,6 +697,7 @@ const translations: Record<SupportedLanguage, Translations> = {
       weekOf: '週の開始',
       fiveHourWindow: '5時間ウィンドウ',
       peakWindow: 'ピークウィンドウ',
+      weeklyLimit: '週間上限（推定）',
       window: 'ウィンドウ',
       percentOfLimit: '上限に対する％（推定）',
       status: 'ステータス',
@@ -812,6 +818,7 @@ const translations: Record<SupportedLanguage, Translations> = {
       weekOf: '주 시작',
       fiveHourWindow: '5시간 창',
       peakWindow: '최대 창',
+      weeklyLimit: '주간 한도(추정)',
       window: '창',
       percentOfLimit: '한도 대비 %(추정)',
       status: '상태',
