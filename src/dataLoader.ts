@@ -12,6 +12,7 @@ import {
   ContentAnalysis,
   ContentSlice,
   FiveHourBlock,
+  PlanTransition,
   ProjectGroup,
   ProjectUsage,
   SessionData,
@@ -23,6 +24,40 @@ import {
 // A reconstructed 5-hour window lasts this long, mirroring Claude Code's
 // rolling subscription limit (and ccusage's `blocks` view).
 const FIVE_HOUR_BLOCK_MS = 5 * 60 * 60 * 1000;
+
+// On May 6 2026 Anthropic permanently doubled the per-5h-window ceilings for
+// Pro, Max, and Team plans. We track this inflection so that historical blocks
+// use the correct era's ceiling.
+const MAY_2026_DOUBLING_MS = new Date('2026-05-06T00:00:00Z').getTime();
+
+// Community-measured token ceilings per plan per era. These are unofficial —
+// Anthropic does not publish absolute token limits — but are well-documented
+// from repeated user measurements and consistent with the /usage utilisation.
+// source: ccusage docs, SessionWatcher, truefoundry, tygart media (Jun 2026).
+const PLAN_LIMITS = {
+  // tokens/5h window before May 6 2026 doubling
+  prePre: { pro: 44_000, max5x: 88_000, max20x: 220_000 },
+  // tokens/5h window after May 6 2026 doubling (2x)
+  post: { pro: 88_000, max5x: 176_000, max20x: 440_000 },
+};
+
+/** Return the community-measured token ceiling for a given plan at a given time. */
+function planCeiling(plan: 'pro' | 'max5x' | 'max20x', atMs: number): number {
+  const era = atMs >= MAY_2026_DOUBLING_MS ? PLAN_LIMITS.post : PLAN_LIMITS.prePre;
+  return era[plan];
+}
+
+/** Infer which plan tier a block belongs to based on its token usage. If the
+ *  usage exceeds the lower plan's ceiling we know the account is on the higher
+ *  plan (because users reported they never hit 100%). If the usage fits within
+ *  the Pro ceiling we cannot distinguish Pro from Max — we return 'unknown'
+ *  unless the caller has already inferred the plan from context. */
+function inferPlanFromTokens(tokens: number, atMs: number): 'pro' | 'max5x' | 'max20x' | 'unknown' {
+  const era = atMs >= MAY_2026_DOUBLING_MS ? PLAN_LIMITS.post : PLAN_LIMITS.prePre;
+  if (tokens > era.max5x) return 'max20x';
+  if (tokens > era.pro)   return 'max5x';
+  return 'unknown'; // fits within Pro but could be any plan
+}
 
 // Constants
 const CLAUDE_CONFIG_DIR_ENV = 'CLAUDE_CONFIG_DIR';
@@ -792,28 +827,21 @@ export class ClaudeDataLoader {
   // --- 5-hour window ("block") reconstruction ---------------------------------
   // Anthropic enforces a rolling 5-hour usage limit but does NOT persist the
   // historical percentage anywhere on disk (the /usage endpoint only returns
-  // the *current* window; the JSONL logs hold raw token counts, never the
-  // percentage). So we reconstruct the windows from timestamps exactly the way
-  // ccusage's `blocks` view does, and *estimate* the percentage. The estimate
-  // is calibrated to the user's biggest historical window, and — when the live
-  // /usage utilisation is available — re-anchored so the active window's
-  // percentage matches what Claude Code itself reports.
+  // the *current* window). So we reconstruct the windows from timestamps and
+  // estimate the percentage using community-measured plan ceilings (PLAN_LIMITS
+  // constants, see top of file). The active window is re-anchored to the live
+  // /usage value when available so it matches what Claude Code itself reports.
 
   /** Total tokens on a UsageData that count toward the rolling limit. */
   private static limitTokensOf(d: UsageData): number {
     return d.totalInputTokens + d.totalOutputTokens + d.totalCacheCreationTokens + d.totalCacheReadTokens;
   }
 
-  /** Floor a timestamp (ms) to the top of its hour, matching ccusage's UTC-hour blocks. */
-  private static floorToHour(ms: number): number {
-    return Math.floor(ms / (60 * 60 * 1000)) * (60 * 60 * 1000);
-  }
-
   /**
    * Group records into rolling 5-hour windows. A window starts at the first
-   * message (floored to the hour) and a new window begins when a record lands
-   * 5h after the window start OR more than 5h after the previous record — so
-   * windows are non-consecutive, matching how the real limit behaves.
+   * message's exact timestamp. A new window begins when a record lands 5h
+   * after the window start OR more than 5h after the previous record —
+   * windows are non-consecutive, matching how Claude Code's real limit works.
    */
   private static buildRawBlocks(records: ClaudeUsageRecord[]): { startMs: number; records: ClaudeUsageRecord[] }[] {
     const dated = records
@@ -828,7 +856,7 @@ export class ClaudeDataLoader {
       const startNew =
         blocks.length === 0 || t - startMs >= FIVE_HOUR_BLOCK_MS || t - lastMs >= FIVE_HOUR_BLOCK_MS;
       if (startNew) {
-        startMs = this.floorToHour(t);
+        startMs = t; // exact first-message timestamp; no hour-flooring
         blocks.push({ startMs, records: [] });
       }
       blocks[blocks.length - 1].records.push(r);
@@ -838,16 +866,50 @@ export class ClaudeDataLoader {
   }
 
   /**
-   * Reconstruct the user's 5-hour usage windows with an estimated
-   * percent-of-limit for each. See the section comment above for why the
-   * percentage is an estimate rather than a stored value.
-   * @param usageLimits Optional live /usage response; when present and the
-   *   most recent window is still active, its percentage is set to the real
-   *   utilisation and every window is rescaled to the implied real limit.
+   * Detect a plan transition in a set of blocks, inferring the plan from
+   * token usage. Returns transitions sorted chronologically.
+   * Strategy: assume Pro until we see a block whose token count unambiguously
+   * exceeds the Pro ceiling for its era — that block marks the switch to Max.
+   */
+  static detectPlanTransitions(blocks: FiveHourBlock[]): PlanTransition[] {
+    const sorted = [...blocks].sort((a, b) => a.start.getTime() - b.start.getTime());
+    const transitions: PlanTransition[] = [];
+    let currentPlan: 'pro' | 'max5x' | 'max20x' | 'unknown' = 'unknown';
+
+    for (const b of sorted) {
+      const inferred = inferPlanFromTokens(b.limitTokens, b.start.getTime());
+      if (inferred === 'unknown') continue; // can't tell from this block alone
+      if (inferred !== currentPlan) {
+        transitions.push({
+          date: b.start,
+          from: currentPlan,
+          to: inferred,
+        });
+        currentPlan = inferred;
+      }
+    }
+    return transitions;
+  }
+
+  /**
+   * Reconstruct 5-hour windows and assign per-block plan ceilings as the
+   * percentage reference.
+   *
+   * `planSetting`: from user config ('auto' | 'pro' | 'max5x' | 'max20x' | 'custom').
+   * `customLimit`: token count to use when planSetting='custom'.
+   * `usageLimits`: live /usage response; when present and the active block is
+   *   still open, its percentage is set to the real utilisation.
+   *
+   * In 'auto' mode we detect the plan per-block: blocks clearly above the Pro
+   * ceiling are assigned Max, everything else inherits the most-recently-
+   * confirmed plan. For the *active* block the live /usage value takes over
+   * when available regardless of plan setting.
    */
   static getFiveHourBlocks(
     records: ClaudeUsageRecord[],
-    usageLimits?: ClaudeApiUsageResponse | null
+    usageLimits?: ClaudeApiUsageResponse | null,
+    planSetting: 'auto' | 'pro' | 'max5x' | 'max20x' | 'custom' = 'auto',
+    customLimit: number = 0
   ): FiveHourBlock[] {
     const raw = this.buildRawBlocks(records);
     if (raw.length === 0) {
@@ -855,47 +917,69 @@ export class ClaudeDataLoader {
     }
 
     const now = Date.now();
-    const blocks: FiveHourBlock[] = raw.map(({ startMs, records: recs }) => {
+
+    // Build blocks with plan limits.
+    // In 'auto' mode we keep track of the latest confirmed plan as we go
+    // (chronological order) so "unknown" blocks inherit context.
+    let autoCurrentPlan: 'pro' | 'max5x' | 'max20x' = 'pro'; // start assuming Pro
+
+    const rawChron = [...raw].sort((a, b) => a.startMs - b.startMs);
+    const blockMap = new Map<number, FiveHourBlock>();
+
+    for (const { startMs, records: recs } of rawChron) {
       const data = this.calculateUsageData(recs);
       const timestamps = recs.map((r) => new Date(r.timestamp).getTime()).filter((t) => !isNaN(t));
       const lastActivityMs = timestamps.length > 0 ? Math.max(...timestamps) : startMs;
+      const limitTokens = this.limitTokensOf(data);
       const end = new Date(startMs + FIVE_HOUR_BLOCK_MS);
-      return {
+
+      let detectedPlan: FiveHourBlock['detectedPlan'];
+      let planLimit: number;
+
+      if (planSetting === 'custom') {
+        detectedPlan = 'custom';
+        planLimit = customLimit > 0 ? customLimit : limitTokens || 1;
+      } else if (planSetting !== 'auto') {
+        detectedPlan = planSetting;
+        planLimit = planCeiling(planSetting, startMs);
+      } else {
+        // auto: infer from tokens, inherit if unknown
+        const inferred = inferPlanFromTokens(limitTokens, startMs);
+        if (inferred !== 'unknown') {
+          autoCurrentPlan = inferred;
+        }
+        detectedPlan = autoCurrentPlan;
+        planLimit = planCeiling(autoCurrentPlan, startMs);
+      }
+
+      const block: FiveHourBlock = {
         start: new Date(startMs),
         end,
         lastActivity: new Date(lastActivityMs),
         isActive: end.getTime() > now,
         data,
-        limitTokens: this.limitTokensOf(data),
-        percent: 0,
+        limitTokens,
+        planLimit,
+        detectedPlan,
+        percent: planLimit > 0 ? (limitTokens / planLimit) * 100 : 0,
         percentIsLive: false,
       };
-    });
+      blockMap.set(startMs, block);
+    }
 
-    // Reference limit = the biggest window the user has ever had (ccusage's
-    // `--token-limit max`). This is what "100%" means absent better info.
-    let reference = blocks.reduce((max, b) => Math.max(max, b.limitTokens), 0);
+    const blocks = [...blockMap.values()];
 
-    // If the live /usage utilisation is available and the newest window is
-    // still active, derive the real token limit from it and rescale everything
-    // so the numbers line up with what Claude Code reports.
+    // Override the active block's percentage with the live /usage value when
+    // available — this is the only block where the real figure is known.
     const activeBlock = blocks.find((b) => b.isActive);
     const liveUtil = usageLimits?.five_hour?.utilization;
-    let liveAnchored = false;
-    if (activeBlock && typeof liveUtil === 'number' && liveUtil > 0 && activeBlock.limitTokens > 0) {
-      const impliedLimit = activeBlock.limitTokens / (liveUtil / 100);
-      if (impliedLimit > 0) {
-        reference = impliedLimit;
-        liveAnchored = true;
-      }
-    }
-
-    for (const b of blocks) {
-      b.percent = reference > 0 ? (b.limitTokens / reference) * 100 : 0;
-    }
-    if (liveAnchored && activeBlock) {
-      activeBlock.percent = liveUtil as number; // exact live value for the current window
+    if (activeBlock && typeof liveUtil === 'number' && liveUtil > 0) {
+      activeBlock.percent = liveUtil;
       activeBlock.percentIsLive = true;
+      // Optionally back-calculate the actual limit from live data.
+      if (activeBlock.limitTokens > 0) {
+        activeBlock.planLimit = Math.round(activeBlock.limitTokens / (liveUtil / 100));
+      }
     }
 
     // Newest first for display.
@@ -949,9 +1033,11 @@ export class ClaudeDataLoader {
    */
   static getWeeklyBlockGroups(
     records: ClaudeUsageRecord[],
-    usageLimits?: ClaudeApiUsageResponse | null
+    usageLimits?: ClaudeApiUsageResponse | null,
+    planSetting: 'auto' | 'pro' | 'max5x' | 'max20x' | 'custom' = 'auto',
+    customLimit: number = 0
   ): WeeklyBlockGroup[] {
-    const blocks = this.getFiveHourBlocks(records, usageLimits);
+    const blocks = this.getFiveHourBlocks(records, usageLimits, planSetting, customLimit);
     if (blocks.length === 0) {
       return [];
     }
@@ -1180,7 +1266,7 @@ export class ClaudeDataLoader {
     const byKey: Record<string, ClaudeUsageRecord[]> = {};
     for (const record of records) {
       const branch = record._gitBranch && record._gitBranch.trim() !== '' ? record._gitBranch : '-';
-      const key = (record._projectName || 'unknown') + ' ' + branch;
+      const key = (record._projectName || 'unknown') + '' + branch;
       if (!byKey[key]) {
         byKey[key] = [];
       }

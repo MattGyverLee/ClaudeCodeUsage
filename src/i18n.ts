@@ -88,12 +88,16 @@ export interface Translations {
     blockClosed: string;
     blockLivePercent: string;
     blockEstimatedPercent: string;
+    blockPlanCustom: string;
     weekOf: string;
     fiveHourWindow: string;
     peakWindow: string;
     window: string;
     percentOfLimit: string;
+    planCeiling: string;
+    plan: string;
     status: string;
+    detectedPlanChanges: string;
   };
   settings: {
     title: string;
@@ -211,6 +215,10 @@ const translations: Record<SupportedLanguage, Translations> = {
       window: 'Window',
       percentOfLimit: '% of limit (est.)',
       status: 'Status',
+      blockPlanCustom: 'Custom',
+      planCeiling: 'Ceiling',
+      plan: 'Plan',
+      detectedPlanChanges: 'Detected plan changes (inferred from usage patterns):',
     },
     settings: {
       title: 'Claude Code Usage Settings',
@@ -329,6 +337,10 @@ const translations: Record<SupportedLanguage, Translations> = {
       window: "Fenster",
       percentOfLimit: "% des Limits (geschätzt)",
       status: "Status",
+      blockPlanCustom: "Benutzerdefiniert",
+      planCeiling: "Obergrenze",
+      plan: "Plan",
+      detectedPlanChanges: "Erkannte Planwechsel (aus Nutzungsmuster abgeleitet):",
     },
     settings: {
       title: "Claude Code Nutzungseinstellungen",
@@ -444,6 +456,10 @@ const translations: Record<SupportedLanguage, Translations> = {
       window: '視窗',
       percentOfLimit: '限額百分比（估計）',
       status: '狀態',
+      blockPlanCustom: '自訂',
+      planCeiling: '上限',
+      plan: '方案',
+      detectedPlanChanges: '偵測到的方案變更（從使用模式推斷）：',
     },
     settings: {
       title: 'Claude Code 使用量設定',
@@ -559,6 +575,10 @@ const translations: Record<SupportedLanguage, Translations> = {
       window: '窗口',
       percentOfLimit: '限额百分比（估计）',
       status: '状态',
+      blockPlanCustom: '自定义',
+      planCeiling: '上限',
+      plan: '套餐',
+      detectedPlanChanges: '检测到的套餐变更（根据使用模式推断）：',
     },
     settings: {
       title: 'Claude Code 使用量设置',
@@ -675,6 +695,10 @@ const translations: Record<SupportedLanguage, Translations> = {
       window: 'ウィンドウ',
       percentOfLimit: '上限に対する％（推定）',
       status: 'ステータス',
+      blockPlanCustom: 'カスタム',
+      planCeiling: '上限',
+      plan: 'プラン',
+      detectedPlanChanges: '検出されたプラン変更（使用状況から推定）：',
     },
     settings: {
       title: 'Claude Code 使用量設定',
@@ -791,6 +815,10 @@ const translations: Record<SupportedLanguage, Translations> = {
       window: '창',
       percentOfLimit: '한도 대비 %(추정)',
       status: '상태',
+      blockPlanCustom: '사용자 정의',
+      planCeiling: '상한선',
+      plan: '플랜',
+      detectedPlanChanges: '감지된 플랜 변경(사용 패턴에서 추론):',
     },
     settings: {
       title: 'Claude Code 사용량 설정',

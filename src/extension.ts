@@ -297,7 +297,9 @@ export class ClaudeCodeUsageExtension {
       enableContentAnalysis: config.get('enableContentAnalysis', true),
       projectGroupingMode: config.get('projectGroupingMode', 'git') as 'git' | 'folder' | 'flat',
       fileWatching: config.get('fileWatching', true),
-      pauseDashboardRefresh: config.get('pauseDashboardRefresh', false)
+      pauseDashboardRefresh: config.get('pauseDashboardRefresh', false),
+      usagePlan: config.get('usagePlan', 'auto') as 'auto' | 'pro' | 'max5x' | 'max20x' | 'custom',
+      customTokenLimit: config.get('customTokenLimit', 0)
     };
   }
 
@@ -508,13 +510,18 @@ export class ClaudeCodeUsageExtension {
       const branchBreakdown = ClaudeDataLoader.getBranchBreakdown(records);
       // 5-hour windows grouped by week. Anchored to the live /usage utilisation
       // when available so the active window's percentage matches Claude Code.
-      const weeklyBlockGroups = ClaudeDataLoader.getWeeklyBlockGroups(records, usageLimits);
+      const weeklyBlockGroups = ClaudeDataLoader.getWeeklyBlockGroups(
+        records, usageLimits, config.usagePlan, config.customTokenLimit
+      );
+      // Detect plan transitions for the banner (auto mode only).
+      const allBlocks = weeklyBlockGroups.flatMap((w) => w.blocks);
+      const planTransitions = ClaudeDataLoader.detectPlanTransitions(allBlocks);
 
       // Update UI — quota was already pushed above, so we pass it again only
       // to keep the success-path signature stable.
       this.statusBar.updateUsageData(todayData, sessionData, undefined, usageLimits);
       if (updateWebview) {
-        this.webviewProvider.updateData(sessionData, todayData, monthData, allTimeData, dailyDataForMonth, dailyDataForAllTime, hourlyDataForToday, undefined, dataDirectory, records, sessionBreakdown, projectBreakdown, contentAnalysis, branchBreakdown, weeklyBlockGroups);
+        this.webviewProvider.updateData(sessionData, todayData, monthData, allTimeData, dailyDataForMonth, dailyDataForAllTime, hourlyDataForToday, undefined, dataDirectory, records, sessionBreakdown, projectBreakdown, contentAnalysis, branchBreakdown, weeklyBlockGroups, planTransitions);
       }
 
     } catch (error) {

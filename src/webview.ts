@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { I18n } from './i18n';
 import { getModelRatesPerMillion } from './pricing';
-import { BranchUsage, ContentAnalysis, FiveHourBlock, ProjectGroup, ProjectUsage, SessionData, SessionUsage, UsageData, WeeklyBlockGroup } from './types';
+import { BranchUsage, ContentAnalysis, FiveHourBlock, PlanTransition, ProjectGroup, ProjectUsage, SessionData, SessionUsage, UsageData, WeeklyBlockGroup } from './types';
 
 export class UsageWebviewProvider {
   private panel: vscode.WebviewPanel | undefined;
@@ -23,6 +23,7 @@ export class UsageWebviewProvider {
   private contentAnalysis: ContentAnalysis | null = null;
   private branchBreakdown: BranchUsage[] = [];
   private weeklyBlockGroups: WeeklyBlockGroup[] = [];
+  private planTransitions: PlanTransition[] = [];
 
   constructor(private context: vscode.ExtensionContext) {}
 
@@ -120,7 +121,8 @@ export class UsageWebviewProvider {
     projectBreakdown: ProjectGroup[] = [],
     contentAnalysis: ContentAnalysis | null = null,
     branchBreakdown: BranchUsage[] = [],
-    weeklyBlockGroups: WeeklyBlockGroup[] = []
+    weeklyBlockGroups: WeeklyBlockGroup[] = [],
+    planTransitions: PlanTransition[] = []
   ): void {
     this.currentSessionData = sessionData;
     this.todayData = todayData;
@@ -140,6 +142,7 @@ export class UsageWebviewProvider {
     this.contentAnalysis = contentAnalysis;
     this.branchBreakdown = branchBreakdown;
     this.weeklyBlockGroups = weeklyBlockGroups;
+    this.planTransitions = planTransitions;
 
     if (this.panel) {
       this.updateWebview();
@@ -1251,10 +1254,37 @@ export class UsageWebviewProvider {
    * calibrated to the user's biggest historical window, and re-anchored to the
    * live /usage utilisation for the active window when that data is available.
    */
+  private planLabel(plan: FiveHourBlock['detectedPlan']): string {
+    const t = I18n.t.popup;
+    switch (plan) {
+      case 'pro':    return 'Pro';
+      case 'max5x':  return 'Max 5×';
+      case 'max20x': return 'Max 20×';
+      case 'custom': return t.blockPlanCustom;
+      default:       return '—';
+    }
+  }
+
   private renderBlocksData(): string {
     const t = I18n.t.popup;
     if (!this.weeklyBlockGroups || this.weeklyBlockGroups.length === 0) {
       return '<div class="no-data"><p>' + I18n.t.popup.noDataMessage + '</p></div>';
+    }
+
+    // Detected plan transitions banner.
+    let transitionBanner = '';
+    if (this.planTransitions && this.planTransitions.length > 0) {
+      const rows = this.planTransitions.map((tr) => {
+        const from = tr.from === 'unknown' ? '?' : this.planLabel(tr.from as any);
+        const to = this.planLabel(tr.to as any);
+        return '<li>' + this.escapeHtml(this.formatDateTime(tr.date)) +
+          ': ' + this.escapeHtml(from + ' → ' + to) + '</li>';
+      }).join('');
+      transitionBanner =
+        '<div class="plan-transitions">' +
+        '<strong>' + this.escapeHtml(t.detectedPlanChanges) + '</strong>' +
+        '<ul>' + rows + '</ul>' +
+        '</div>';
     }
 
     let weeksHtml = '';
@@ -1263,14 +1293,19 @@ export class UsageWebviewProvider {
       week.blocks.forEach((b) => {
         const statusLabel = b.isActive ? t.blockActive : t.blockClosed;
         const statusClass = b.isActive ? 'block-active' : '';
+        const tokenFraction =
+          I18n.formatNumber(b.limitTokens) + ' / ' + I18n.formatNumber(b.planLimit);
         blockRows +=
           '<tr class="' + statusClass + '">' +
           '<td class="date-cell">' + this.escapeHtml(this.formatDateTime(b.start)) + '</td>' +
           '<td class="date-cell">' + this.escapeHtml(this.formatBlockRange(b)) + '</td>' +
           '<td class="pct-cell">' + this.percentBar(b.percent, b.percentIsLive) + '</td>' +
+          '<td class="number-cell" title="' + this.escapeHtml(tokenFraction) + '">' +
+            tokenFraction + '</td>' +
           '<td class="cost-cell">' + I18n.formatCurrency(b.data.totalCost) + '</td>' +
-          '<td class="number-cell">' + I18n.formatNumber(b.limitTokens) + '</td>' +
           '<td class="number-cell">' + I18n.formatNumber(b.data.messageCount) + '</td>' +
+          '<td class="date-cell plan-badge plan-' + b.detectedPlan + '">' +
+            this.escapeHtml(this.planLabel(b.detectedPlan)) + '</td>' +
           '<td class="date-cell">' + this.escapeHtml(statusLabel) + '</td>' +
           '</tr>';
       });
@@ -1297,9 +1332,10 @@ export class UsageWebviewProvider {
         '<th>' + t.startTime + '</th>' +
         '<th>' + t.window + '</th>' +
         '<th>' + t.percentOfLimit + '</th>' +
+        '<th>' + t.totalTokens + ' / ' + t.planCeiling + '</th>' +
         '<th>' + t.cost + '</th>' +
-        '<th>' + t.totalTokens + '</th>' +
         '<th>' + t.messages + '</th>' +
+        '<th>' + t.plan + '</th>' +
         '<th>' + t.status + '</th>' +
         '</tr></thead>' +
         '<tbody>' + blockRows + '</tbody>' +
@@ -1312,6 +1348,7 @@ export class UsageWebviewProvider {
       '<div class="daily-breakdown">' +
       '<h3>' + t.blocksBreakdown + '</h3>' +
       '<p class="estimate-note">' + this.escapeHtml(t.blocksEstimateNote) + '</p>' +
+      transitionBanner +
       weeksHtml +
       '</div>'
     );
@@ -2651,6 +2688,27 @@ export class UsageWebviewProvider {
       tr.block-active td {
         background: var(--vscode-list-activeSelectionBackground, rgba(127,127,200,0.15));
       }
+      .plan-badge {
+        font-size: 0.8em;
+        font-weight: 600;
+        padding: 2px 6px;
+        border-radius: 4px;
+        white-space: nowrap;
+      }
+      .plan-pro    { color: var(--vscode-charts-blue,  #007acc); }
+      .plan-max5x  { color: var(--vscode-charts-green, #388a34); }
+      .plan-max20x { color: var(--vscode-charts-red,   #d13438); }
+      .plan-custom { color: var(--vscode-charts-purple,#8B5CF6); }
+      .plan-unknown { opacity: 0.5; }
+      .plan-transitions {
+        margin-bottom: 14px;
+        padding: 8px 12px;
+        border-left: 3px solid var(--vscode-charts-green, #388a34);
+        background: var(--vscode-textBlockQuote-background, rgba(127,127,127,0.1));
+        font-size: 0.88em;
+      }
+      .plan-transitions ul { margin: 4px 0 0 16px; padding: 0; }
+      .plan-transitions li { margin: 2px 0; }
     `;
   }
 
