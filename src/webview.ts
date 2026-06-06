@@ -1260,6 +1260,7 @@ export class UsageWebviewProvider {
       case 'pro':    return 'Pro';
       case 'max5x':  return 'Max 5×';
       case 'max20x': return 'Max 20×';
+      case 'team':   return 'Team (6.25×)';
       case 'custom': return t.blockPlanCustom;
       default:       return '—';
     }
@@ -2704,6 +2705,7 @@ export class UsageWebviewProvider {
       .plan-pro    { color: var(--vscode-charts-blue,  #007acc); }
       .plan-max5x  { color: var(--vscode-charts-green, #388a34); }
       .plan-max20x { color: var(--vscode-charts-red,   #d13438); }
+      .plan-team   { color: var(--vscode-charts-orange,#d18616); }
       .plan-custom { color: var(--vscode-charts-purple,#8B5CF6); }
       .plan-unknown { opacity: 0.5; }
       .plan-transitions {

@@ -34,15 +34,20 @@ const MAY_2026_DOUBLING_MS = new Date('2026-05-06T00:00:00Z').getTime();
 // Anthropic does not publish absolute token limits — but are well-documented
 // from repeated user measurements and consistent with the /usage utilisation.
 // source: ccusage docs, SessionWatcher, truefoundry, tygart media (Jun 2026).
+// Team Premium seats (incl. the non-profit Team plan that bundles Claude Code)
+// get 6.25× Pro's per-session headroom — slightly above Max 5× — per Verdent's
+// 2026 pricing guide. We model the 5h ceiling as 6.25 × the Pro ceiling.
+const TEAM_PREMIUM_MULTIPLIER = 6.25;
+
 const PLAN_LIMITS = {
   // tokens/5h window before May 6 2026 doubling
-  prePre: { pro: 44_000, max5x: 88_000, max20x: 220_000 },
+  prePre: { pro: 44_000, max5x: 88_000, max20x: 220_000, team: 44_000 * TEAM_PREMIUM_MULTIPLIER },
   // tokens/5h window after May 6 2026 doubling (2x)
-  post: { pro: 88_000, max5x: 176_000, max20x: 440_000 },
+  post: { pro: 88_000, max5x: 176_000, max20x: 440_000, team: 88_000 * TEAM_PREMIUM_MULTIPLIER },
 };
 
 /** Return the community-measured token ceiling for a given plan at a given time. */
-function planCeiling(plan: 'pro' | 'max5x' | 'max20x', atMs: number): number {
+function planCeiling(plan: 'pro' | 'max5x' | 'max20x' | 'team', atMs: number): number {
   const era = atMs >= MAY_2026_DOUBLING_MS ? PLAN_LIMITS.post : PLAN_LIMITS.prePre;
   return era[plan];
 }
@@ -55,7 +60,7 @@ function planCeiling(plan: 'pro' | 'max5x' | 'max20x', atMs: number): number {
 const WEEKLY_MULTIPLIER = 7;
 
 /** Return the estimated 7-day token ceiling for a given plan at a given time. */
-function weeklyCeiling(plan: 'pro' | 'max5x' | 'max20x', atMs: number): number {
+function weeklyCeiling(plan: 'pro' | 'max5x' | 'max20x' | 'team', atMs: number): number {
   return planCeiling(plan, atMs) * WEEKLY_MULTIPLIER;
 }
 
@@ -920,7 +925,7 @@ export class ClaudeDataLoader {
   static getFiveHourBlocks(
     records: ClaudeUsageRecord[],
     usageLimits?: ClaudeApiUsageResponse | null,
-    planSetting: 'auto' | 'pro' | 'max5x' | 'max20x' | 'custom' = 'auto',
+    planSetting: 'auto' | 'pro' | 'max5x' | 'max20x' | 'team' | 'custom' = 'auto',
     customLimit: number = 0
   ): FiveHourBlock[] {
     const raw = this.buildRawBlocks(records);
@@ -1046,7 +1051,7 @@ export class ClaudeDataLoader {
   static getWeeklyBlockGroups(
     records: ClaudeUsageRecord[],
     usageLimits?: ClaudeApiUsageResponse | null,
-    planSetting: 'auto' | 'pro' | 'max5x' | 'max20x' | 'custom' = 'auto',
+    planSetting: 'auto' | 'pro' | 'max5x' | 'max20x' | 'team' | 'custom' = 'auto',
     customLimit: number = 0
   ): WeeklyBlockGroup[] {
     const blocks = this.getFiveHourBlocks(records, usageLimits, planSetting, customLimit);
@@ -1084,7 +1089,7 @@ export class ClaudeDataLoader {
       let weeklyTokens = 0;
       // Pick the week's dominant plan: the highest tier any block in the week
       // was assigned, so the weekly ceiling reflects the strongest plan active.
-      const planRank: Record<string, number> = { unknown: 0, pro: 1, max5x: 2, max20x: 3, custom: 4 };
+      const planRank: Record<string, number> = { unknown: 0, pro: 1, max5x: 2, max20x: 3, team: 4, custom: 5 };
       let weeklyPlan: WeeklyBlockGroup['weeklyPlan'] = 'unknown';
       for (const b of weekBlocks) {
         this.addUsageData(data, b.data);
@@ -1099,7 +1104,7 @@ export class ClaudeDataLoader {
       // 'custom'/'unknown' we fall back to 7× the custom 5h limit when set,
       // otherwise leave the limit at the tokens used (so percent caps at 100).
       let weeklyLimit: number;
-      if (weeklyPlan === 'pro' || weeklyPlan === 'max5x' || weeklyPlan === 'max20x') {
+      if (weeklyPlan === 'pro' || weeklyPlan === 'max5x' || weeklyPlan === 'max20x' || weeklyPlan === 'team') {
         weeklyLimit = weeklyCeiling(weeklyPlan, weekStart.getTime());
       } else if (customLimit > 0) {
         weeklyLimit = customLimit * WEEKLY_MULTIPLIER;

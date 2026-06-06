@@ -298,7 +298,7 @@ export class ClaudeCodeUsageExtension {
       projectGroupingMode: config.get('projectGroupingMode', 'git') as 'git' | 'folder' | 'flat',
       fileWatching: config.get('fileWatching', true),
       pauseDashboardRefresh: config.get('pauseDashboardRefresh', false),
-      usagePlan: config.get('usagePlan', 'auto') as 'auto' | 'pro' | 'max5x' | 'max20x' | 'custom',
+      usagePlan: config.get('usagePlan', 'auto') as 'auto' | 'pro' | 'max5x' | 'max20x' | 'team' | 'custom',
       customTokenLimit: config.get('customTokenLimit', 0)
     };
   }

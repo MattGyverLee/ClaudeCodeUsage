@@ -139,12 +139,13 @@
         },
         "claudeCodeUsage.usagePlan": {
           "type": "string",
-          "enum": ["auto", "pro", "max5x", "max20x", "custom"],
+          "enum": ["auto", "pro", "max5x", "max20x", "team", "custom"],
           "enumDescriptions": [
             "Auto-detect plan from usage patterns (recommended). Blocks whose token count clearly exceeds the Pro ceiling are assigned Max.",
             "Claude Pro — community-measured ceiling: ~44k tokens/5h (pre-May 2026) or ~88k (post-May 2026 doubling).",
             "Claude Max 5× — community-measured ceiling: ~88k tokens/5h (pre-May 2026) or ~176k (post).",
             "Claude Max 20× — community-measured ceiling: ~220k tokens/5h (pre-May 2026) or ~440k (post).",
+            "Team Premium / non-profit Team seat with Claude Code — 6.25× the Pro ceiling: ~275k tokens/5h (pre-May 2026) or ~550k (post).",
             "Use a custom token ceiling — set claudeCodeUsage.customTokenLimit."
           ],
           "default": "auto",

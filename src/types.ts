@@ -145,7 +145,7 @@ export interface ExtensionConfig {
   pauseDashboardRefresh: boolean;
   // Which plan ceiling to use for the 5-hour windows tab.
   // 'auto' infers the plan from usage patterns.
-  usagePlan: 'auto' | 'pro' | 'max5x' | 'max20x' | 'custom';
+  usagePlan: 'auto' | 'pro' | 'max5x' | 'max20x' | 'team' | 'custom';
   // Token ceiling per 5-hour window when usagePlan = 'custom'.
   customTokenLimit: number;
 }
@@ -189,7 +189,7 @@ export interface FiveHourBlock {
   // Plan ceiling used as 100% for this block (community-measured, unofficial).
   planLimit: number;
   // Which plan was inferred for this block.
-  detectedPlan: 'pro' | 'max5x' | 'max20x' | 'custom' | 'unknown';
+  detectedPlan: 'pro' | 'max5x' | 'max20x' | 'team' | 'custom' | 'unknown';
   // Estimated fraction of the limit consumed (0–100). May exceed 100 if the
   // ceiling estimate is wrong for your specific account.
   percent: number;
@@ -214,7 +214,7 @@ export interface WeeklyBlockGroup {
   // Whether weeklyPercent was set from the live /usage seven_day utilisation.
   weeklyPercentIsLive: boolean;
   // Plan used to pick weeklyLimit ('custom'/'unknown' when not inferable).
-  weeklyPlan: 'pro' | 'max5x' | 'max20x' | 'custom' | 'unknown';
+  weeklyPlan: 'pro' | 'max5x' | 'max20x' | 'team' | 'custom' | 'unknown';
 }
 
 // A detected transition from one plan to another, inferred from usage patterns.
