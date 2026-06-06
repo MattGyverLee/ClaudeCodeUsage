@@ -7,15 +7,74 @@ import * as path from 'path';
 import { calculateCostBreakdown } from './pricing';
 import {
   BranchUsage,
+  ClaudeApiUsageResponse,
   ClaudeUsageRecord,
   ContentAnalysis,
   ContentSlice,
+  FiveHourBlock,
+  PlanTransition,
   ProjectGroup,
   ProjectUsage,
   SessionData,
   SessionUsage,
   UsageData,
+  WeeklyBlockGroup,
 } from './types';
+
+// A reconstructed 5-hour window lasts this long, mirroring Claude Code's
+// rolling subscription limit (and ccusage's `blocks` view).
+const FIVE_HOUR_BLOCK_MS = 5 * 60 * 60 * 1000;
+
+// On May 6 2026 Anthropic permanently doubled the per-5h-window ceilings for
+// Pro, Max, and Team plans. We track this inflection so that historical blocks
+// use the correct era's ceiling.
+const MAY_2026_DOUBLING_MS = new Date('2026-05-06T00:00:00Z').getTime();
+
+// Community-measured token ceilings per plan per era. These are unofficial —
+// Anthropic does not publish absolute token limits — but are well-documented
+// from repeated user measurements and consistent with the /usage utilisation.
+// source: ccusage docs, SessionWatcher, truefoundry, tygart media (Jun 2026).
+// Team Premium seats (incl. the non-profit Team plan that bundles Claude Code)
+// get 6.25× Pro's per-session headroom — slightly above Max 5× — per Verdent's
+// 2026 pricing guide. We model the 5h ceiling as 6.25 × the Pro ceiling.
+const TEAM_PREMIUM_MULTIPLIER = 6.25;
+
+const PLAN_LIMITS = {
+  // tokens/5h window before May 6 2026 doubling
+  prePre: { pro: 44_000, max5x: 88_000, max20x: 220_000, team: 44_000 * TEAM_PREMIUM_MULTIPLIER },
+  // tokens/5h window after May 6 2026 doubling (2x)
+  post: { pro: 88_000, max5x: 176_000, max20x: 440_000, team: 88_000 * TEAM_PREMIUM_MULTIPLIER },
+};
+
+/** Return the community-measured token ceiling for a given plan at a given time. */
+function planCeiling(plan: 'pro' | 'max5x' | 'max20x' | 'team', atMs: number): number {
+  const era = atMs >= MAY_2026_DOUBLING_MS ? PLAN_LIMITS.post : PLAN_LIMITS.prePre;
+  return era[plan];
+}
+
+// Community-measured 7-day ("weekly") token ceilings. The few open-source
+// trackers that bother with the weekly window (e.g. jeck00119/claude-codex-
+// switcher) model it as roughly 7× the 5-hour ceiling, so we do the same.
+// Anthropic publishes neither an absolute number nor a fixed multiplier, so
+// this is an estimate — treat it as a rough gauge, not an exact budget.
+const WEEKLY_MULTIPLIER = 7;
+
+/** Return the estimated 7-day token ceiling for a given plan at a given time. */
+function weeklyCeiling(plan: 'pro' | 'max5x' | 'max20x' | 'team', atMs: number): number {
+  return planCeiling(plan, atMs) * WEEKLY_MULTIPLIER;
+}
+
+/** Infer which plan tier a block belongs to based on its token usage. If the
+ *  usage exceeds the lower plan's ceiling we know the account is on the higher
+ *  plan (because users reported they never hit 100%). If the usage fits within
+ *  the Pro ceiling we cannot distinguish Pro from Max — we return 'unknown'
+ *  unless the caller has already inferred the plan from context. */
+function inferPlanFromTokens(tokens: number, atMs: number): 'pro' | 'max5x' | 'max20x' | 'unknown' {
+  const era = atMs >= MAY_2026_DOUBLING_MS ? PLAN_LIMITS.post : PLAN_LIMITS.prePre;
+  if (tokens > era.max5x) return 'max20x';
+  if (tokens > era.pro)   return 'max5x';
+  return 'unknown'; // fits within Pro but could be any plan
+}
 
 // Constants
 const CLAUDE_CONFIG_DIR_ENV = 'CLAUDE_CONFIG_DIR';
@@ -782,6 +841,307 @@ export class ClaudeDataLoader {
       .slice(0, limit);
   }
 
+  // --- 5-hour window ("block") reconstruction ---------------------------------
+  // Anthropic enforces a rolling 5-hour usage limit but does NOT persist the
+  // historical percentage anywhere on disk (the /usage endpoint only returns
+  // the *current* window). So we reconstruct the windows from timestamps and
+  // estimate the percentage using community-measured plan ceilings (PLAN_LIMITS
+  // constants, see top of file). The active window is re-anchored to the live
+  // /usage value when available so it matches what Claude Code itself reports.
+
+  /** Total tokens on a UsageData that count toward the rolling limit. */
+  private static limitTokensOf(d: UsageData): number {
+    return d.totalInputTokens + d.totalOutputTokens + d.totalCacheCreationTokens + d.totalCacheReadTokens;
+  }
+
+  /**
+   * Group records into rolling 5-hour windows. A window starts at the first
+   * message's exact timestamp. A new window begins when a record lands 5h
+   * after the window start OR more than 5h after the previous record —
+   * windows are non-consecutive, matching how Claude Code's real limit works.
+   */
+  private static buildRawBlocks(records: ClaudeUsageRecord[]): { startMs: number; records: ClaudeUsageRecord[] }[] {
+    const dated = records
+      .map((r) => ({ r, t: new Date(r.timestamp).getTime() }))
+      .filter((x) => !isNaN(x.t))
+      .sort((a, b) => a.t - b.t);
+
+    const blocks: { startMs: number; records: ClaudeUsageRecord[] }[] = [];
+    let startMs = 0;
+    let lastMs = 0;
+    for (const { r, t } of dated) {
+      const startNew =
+        blocks.length === 0 || t - startMs >= FIVE_HOUR_BLOCK_MS || t - lastMs >= FIVE_HOUR_BLOCK_MS;
+      if (startNew) {
+        startMs = t; // exact first-message timestamp; no hour-flooring
+        blocks.push({ startMs, records: [] });
+      }
+      blocks[blocks.length - 1].records.push(r);
+      lastMs = t;
+    }
+    return blocks;
+  }
+
+  /**
+   * Detect a plan transition in a set of blocks, inferring the plan from
+   * token usage. Returns transitions sorted chronologically.
+   * Strategy: assume Pro until we see a block whose token count unambiguously
+   * exceeds the Pro ceiling for its era — that block marks the switch to Max.
+   */
+  static detectPlanTransitions(blocks: FiveHourBlock[]): PlanTransition[] {
+    const sorted = [...blocks].sort((a, b) => a.start.getTime() - b.start.getTime());
+    const transitions: PlanTransition[] = [];
+    let currentPlan: 'pro' | 'max5x' | 'max20x' | 'unknown' = 'unknown';
+
+    for (const b of sorted) {
+      const inferred = inferPlanFromTokens(b.limitTokens, b.start.getTime());
+      if (inferred === 'unknown') continue; // can't tell from this block alone
+      if (inferred !== currentPlan) {
+        transitions.push({
+          date: b.start,
+          from: currentPlan,
+          to: inferred,
+        });
+        currentPlan = inferred;
+      }
+    }
+    return transitions;
+  }
+
+  /**
+   * Reconstruct 5-hour windows and assign per-block plan ceilings as the
+   * percentage reference.
+   *
+   * `planSetting`: from user config ('auto' | 'pro' | 'max5x' | 'max20x' | 'custom').
+   * `customLimit`: token count to use when planSetting='custom'.
+   * `usageLimits`: live /usage response; when present and the active block is
+   *   still open, its percentage is set to the real utilisation.
+   *
+   * In 'auto' mode we detect the plan per-block: blocks clearly above the Pro
+   * ceiling are assigned Max, everything else inherits the most-recently-
+   * confirmed plan. For the *active* block the live /usage value takes over
+   * when available regardless of plan setting.
+   */
+  static getFiveHourBlocks(
+    records: ClaudeUsageRecord[],
+    usageLimits?: ClaudeApiUsageResponse | null,
+    planSetting: 'auto' | 'pro' | 'max5x' | 'max20x' | 'team' | 'custom' = 'auto',
+    customLimit: number = 0
+  ): FiveHourBlock[] {
+    const raw = this.buildRawBlocks(records);
+    if (raw.length === 0) {
+      return [];
+    }
+
+    const now = Date.now();
+
+    // Build blocks with plan limits.
+    // In 'auto' mode we keep track of the latest confirmed plan as we go
+    // (chronological order) so "unknown" blocks inherit context.
+    let autoCurrentPlan: 'pro' | 'max5x' | 'max20x' = 'pro'; // start assuming Pro
+
+    const rawChron = [...raw].sort((a, b) => a.startMs - b.startMs);
+    const blockMap = new Map<number, FiveHourBlock>();
+
+    for (const { startMs, records: recs } of rawChron) {
+      const data = this.calculateUsageData(recs);
+      const timestamps = recs.map((r) => new Date(r.timestamp).getTime()).filter((t) => !isNaN(t));
+      const lastActivityMs = timestamps.length > 0 ? Math.max(...timestamps) : startMs;
+      const limitTokens = this.limitTokensOf(data);
+      const end = new Date(startMs + FIVE_HOUR_BLOCK_MS);
+
+      let detectedPlan: FiveHourBlock['detectedPlan'];
+      let planLimit: number;
+
+      if (planSetting === 'custom') {
+        detectedPlan = 'custom';
+        planLimit = customLimit > 0 ? customLimit : limitTokens || 1;
+      } else if (planSetting !== 'auto') {
+        detectedPlan = planSetting;
+        planLimit = planCeiling(planSetting, startMs);
+      } else {
+        // auto: infer from tokens, inherit if unknown
+        const inferred = inferPlanFromTokens(limitTokens, startMs);
+        if (inferred !== 'unknown') {
+          autoCurrentPlan = inferred;
+        }
+        detectedPlan = autoCurrentPlan;
+        planLimit = planCeiling(autoCurrentPlan, startMs);
+      }
+
+      const block: FiveHourBlock = {
+        start: new Date(startMs),
+        end,
+        lastActivity: new Date(lastActivityMs),
+        isActive: end.getTime() > now,
+        data,
+        limitTokens,
+        planLimit,
+        detectedPlan,
+        percent: planLimit > 0 ? (limitTokens / planLimit) * 100 : 0,
+        percentIsLive: false,
+      };
+      blockMap.set(startMs, block);
+    }
+
+    const blocks = [...blockMap.values()];
+
+    // Override the active block's percentage with the live /usage value when
+    // available — this is the only block where the real figure is known.
+    const activeBlock = blocks.find((b) => b.isActive);
+    const liveUtil = usageLimits?.five_hour?.utilization;
+    if (activeBlock && typeof liveUtil === 'number' && liveUtil > 0) {
+      activeBlock.percent = liveUtil;
+      activeBlock.percentIsLive = true;
+      // Optionally back-calculate the actual limit from live data.
+      if (activeBlock.limitTokens > 0) {
+        activeBlock.planLimit = Math.round(activeBlock.limitTokens / (liveUtil / 100));
+      }
+    }
+
+    // Newest first for display.
+    return blocks.sort((a, b) => b.start.getTime() - a.start.getTime());
+  }
+
+  /** Add one UsageData's totals into another (used to aggregate a week). */
+  private static addUsageData(target: UsageData, src: UsageData): void {
+    target.totalInputTokens += src.totalInputTokens;
+    target.totalOutputTokens += src.totalOutputTokens;
+    target.totalCacheCreationTokens += src.totalCacheCreationTokens;
+    target.totalCacheReadTokens += src.totalCacheReadTokens;
+    target.totalCost += src.totalCost;
+    target.costBreakdown.input += src.costBreakdown.input;
+    target.costBreakdown.output += src.costBreakdown.output;
+    target.costBreakdown.cacheWrite += src.costBreakdown.cacheWrite;
+    target.costBreakdown.cacheRead += src.costBreakdown.cacheRead;
+    target.messageCount += src.messageCount;
+    for (const [model, m] of Object.entries(src.modelBreakdown)) {
+      if (!target.modelBreakdown[model]) {
+        target.modelBreakdown[model] = { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, cost: 0, count: 0 };
+      }
+      const tm = target.modelBreakdown[model];
+      tm.inputTokens += m.inputTokens;
+      tm.outputTokens += m.outputTokens;
+      tm.cacheCreationTokens += m.cacheCreationTokens;
+      tm.cacheReadTokens += m.cacheReadTokens;
+      tm.cost += m.cost;
+      tm.count += m.count;
+    }
+  }
+
+  /** Empty UsageData accumulator. */
+  private static emptyUsageData(): UsageData {
+    return {
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCacheCreationTokens: 0,
+      totalCacheReadTokens: 0,
+      totalCost: 0,
+      costBreakdown: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+      messageCount: 0,
+      modelBreakdown: {},
+    };
+  }
+
+  /**
+   * Reconstruct 5-hour windows and group them by calendar week (Mon-Sun).
+   * Each week carries its own aggregate usage and the peak single-window
+   * percentage reached that week. Weeks are returned newest first.
+   */
+  static getWeeklyBlockGroups(
+    records: ClaudeUsageRecord[],
+    usageLimits?: ClaudeApiUsageResponse | null,
+    planSetting: 'auto' | 'pro' | 'max5x' | 'max20x' | 'team' | 'custom' = 'auto',
+    customLimit: number = 0
+  ): WeeklyBlockGroup[] {
+    const blocks = this.getFiveHourBlocks(records, usageLimits, planSetting, customLimit);
+    if (blocks.length === 0) {
+      return [];
+    }
+
+    const byWeek: Record<string, { weekStart: Date; blocks: FiveHourBlock[] }> = {};
+    for (const block of blocks) {
+      const d = block.start;
+      const day = d.getDay(); // 0=Sun..6=Sat
+      const diffToMonday = day === 0 ? -6 : 1 - day;
+      const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate() + diffToMonday);
+      monday.setHours(0, 0, 0, 0);
+      const pad = (n: number): string => String(n).padStart(2, '0');
+      const key = `${monday.getFullYear()}-${pad(monday.getMonth() + 1)}-${pad(monday.getDate())}`;
+      if (!byWeek[key]) {
+        byWeek[key] = { weekStart: monday, blocks: [] };
+      }
+      byWeek[key].blocks.push(block);
+    }
+
+    // The current calendar week is the one we may anchor to the live 7-day
+    // utilisation. Compute its Monday once for comparison.
+    const nowDate = new Date();
+    const nowDay = nowDate.getDay();
+    const nowDiffToMonday = nowDay === 0 ? -6 : 1 - nowDay;
+    const currentMonday = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate() + nowDiffToMonday);
+    currentMonday.setHours(0, 0, 0, 0);
+    const liveWeekUtil = usageLimits?.seven_day?.utilization;
+
+    const groups: WeeklyBlockGroup[] = Object.entries(byWeek).map(([weekKey, { weekStart, blocks: weekBlocks }]) => {
+      const data = this.emptyUsageData();
+      let peakPercent = 0;
+      let weeklyTokens = 0;
+      // Pick the week's dominant plan: the highest tier any block in the week
+      // was assigned, so the weekly ceiling reflects the strongest plan active.
+      const planRank: Record<string, number> = { unknown: 0, pro: 1, max5x: 2, max20x: 3, team: 4, custom: 5 };
+      let weeklyPlan: WeeklyBlockGroup['weeklyPlan'] = 'unknown';
+      for (const b of weekBlocks) {
+        this.addUsageData(data, b.data);
+        peakPercent = Math.max(peakPercent, b.percent);
+        weeklyTokens += b.limitTokens;
+        if (planRank[b.detectedPlan] > planRank[weeklyPlan]) {
+          weeklyPlan = b.detectedPlan;
+        }
+      }
+
+      // Weekly ceiling from the dominant plan (7× the 5-hour ceiling). For
+      // 'custom'/'unknown' we fall back to 7× the custom 5h limit when set,
+      // otherwise leave the limit at the tokens used (so percent caps at 100).
+      let weeklyLimit: number;
+      if (weeklyPlan === 'pro' || weeklyPlan === 'max5x' || weeklyPlan === 'max20x' || weeklyPlan === 'team') {
+        weeklyLimit = weeklyCeiling(weeklyPlan, weekStart.getTime());
+      } else if (customLimit > 0) {
+        weeklyLimit = customLimit * WEEKLY_MULTIPLIER;
+      } else {
+        weeklyLimit = weeklyTokens || 1;
+      }
+      let weeklyPercent = weeklyLimit > 0 ? (weeklyTokens / weeklyLimit) * 100 : 0;
+      let weeklyPercentIsLive = false;
+
+      // Anchor the *current* week to the live 7-day utilisation when available.
+      if (weekStart.getTime() === currentMonday.getTime() && typeof liveWeekUtil === 'number' && liveWeekUtil > 0) {
+        weeklyPercent = liveWeekUtil;
+        weeklyPercentIsLive = true;
+        if (weeklyTokens > 0) {
+          weeklyLimit = Math.round(weeklyTokens / (liveWeekUtil / 100));
+        }
+      }
+
+      // Newest block first within the week.
+      weekBlocks.sort((a, b) => b.start.getTime() - a.start.getTime());
+      return {
+        weekStart,
+        weekKey,
+        data,
+        blocks: weekBlocks,
+        peakPercent,
+        weeklyTokens,
+        weeklyLimit,
+        weeklyPercent,
+        weeklyPercentIsLive,
+        weeklyPlan,
+      };
+    });
+
+    return groups.sort((a, b) => b.weekStart.getTime() - a.weekStart.getTime());
+  }
+
   /** Normalise a path for case-insensitive comparison and grouping. */
   private static normalizePath(p: string): string {
     return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -976,7 +1336,7 @@ export class ClaudeDataLoader {
     const byKey: Record<string, ClaudeUsageRecord[]> = {};
     for (const record of records) {
       const branch = record._gitBranch && record._gitBranch.trim() !== '' ? record._gitBranch : '-';
-      const key = (record._projectName || 'unknown') + ' ' + branch;
+      const key = (record._projectName || 'unknown') + '' + branch;
       if (!byKey[key]) {
         byKey[key] = [];
       }

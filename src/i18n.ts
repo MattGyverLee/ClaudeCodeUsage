@@ -81,6 +81,24 @@ export interface Translations {
     dataDirectory: string;
     noDataMessage: string;
     errorMessage: string;
+    blocks: string;
+    blocksBreakdown: string;
+    blocksEstimateNote: string;
+    blockActive: string;
+    blockClosed: string;
+    blockLivePercent: string;
+    blockEstimatedPercent: string;
+    blockPlanCustom: string;
+    weekOf: string;
+    fiveHourWindow: string;
+    peakWindow: string;
+    weeklyLimit: string;
+    window: string;
+    percentOfLimit: string;
+    planCeiling: string;
+    plan: string;
+    status: string;
+    detectedPlanChanges: string;
   };
   settings: {
     title: string;
@@ -184,6 +202,25 @@ const translations: Record<SupportedLanguage, Translations> = {
       dataDirectory: 'Data Directory',
       noDataMessage: 'No usage data found. Make sure Claude Code is running and configured correctly.',
       errorMessage: 'Error loading usage data. Please check your configuration.',
+      blocks: '5-Hour Windows',
+      blocksBreakdown: '5-Hour Usage Windows by Week',
+      blocksEstimateNote:
+        'Windows are reconstructed from your local logs. The percentage is an estimate — Anthropic does not store the historical limit. It is scaled to your biggest window, and the active window (•) is anchored to the live /usage value when available.',
+      blockActive: 'Active',
+      blockClosed: 'Closed',
+      blockLivePercent: 'Live value from Anthropic /usage.',
+      blockEstimatedPercent: 'Estimated from token usage (relative to your peak window).',
+      weekOf: 'Week of',
+      fiveHourWindow: '5h window',
+      peakWindow: 'Peak window',
+      weeklyLimit: 'Weekly limit (est.)',
+      window: 'Window',
+      percentOfLimit: '% of limit (est.)',
+      status: 'Status',
+      blockPlanCustom: 'Custom',
+      planCeiling: 'Ceiling',
+      plan: 'Plan',
+      detectedPlanChanges: 'Detected plan changes (inferred from usage patterns):',
     },
     settings: {
       title: 'Claude Code Usage Settings',
@@ -288,6 +325,25 @@ const translations: Record<SupportedLanguage, Translations> = {
         "Keine Daten gefunden. Stell sicher, dass Claude Code läuft und entsprechend konfiguriert ist.",
       errorMessage:
         "Fehler beim laden der Nutzungsdaten. Bitte prüfe deine Konfiguration.",
+      blocks: "5-Stunden-Fenster",
+      blocksBreakdown: "5-Stunden-Nutzungsfenster nach Woche",
+      blocksEstimateNote:
+        "Die Fenster werden aus deinen lokalen Logs rekonstruiert. Der Prozentwert ist eine Schätzung — Anthropic speichert das historische Limit nicht. Er ist auf dein größtes Fenster skaliert; das aktive Fenster (•) wird, wenn verfügbar, am Live-Wert von /usage ausgerichtet.",
+      blockActive: "Aktiv",
+      blockClosed: "Beendet",
+      blockLivePercent: "Live-Wert von Anthropic /usage.",
+      blockEstimatedPercent: "Geschätzt aus dem Tokenverbrauch (relativ zu deinem Spitzenfenster).",
+      weekOf: "Woche vom",
+      fiveHourWindow: "5h-Fenster",
+      peakWindow: "Spitzenfenster",
+      weeklyLimit: "Wochenlimit (geschätzt)",
+      window: "Fenster",
+      percentOfLimit: "% des Limits (geschätzt)",
+      status: "Status",
+      blockPlanCustom: "Benutzerdefiniert",
+      planCeiling: "Obergrenze",
+      plan: "Plan",
+      detectedPlanChanges: "Erkannte Planwechsel (aus Nutzungsmuster abgeleitet):",
     },
     settings: {
       title: "Claude Code Nutzungseinstellungen",
@@ -389,6 +445,25 @@ const translations: Record<SupportedLanguage, Translations> = {
       dataDirectory: '資料目錄',
       noDataMessage: '找不到使用資料。請確認 Claude Code 正在執行且設定正確。',
       errorMessage: '載入使用資料時發生錯誤。請檢查您的設定。',
+      blocks: '5 小時視窗',
+      blocksBreakdown: '每週 5 小時使用視窗',
+      blocksEstimateNote:
+        '視窗是從您的本機紀錄重建的。百分比為估計值——Anthropic 並未儲存歷史限額。數值以您最大的視窗為基準縮放；目前進行中的視窗（•）會在可取得時以 /usage 的即時數值校準。',
+      blockActive: '進行中',
+      blockClosed: '已結束',
+      blockLivePercent: '來自 Anthropic /usage 的即時數值。',
+      blockEstimatedPercent: '根據 token 使用量估算（相對於您的高峰視窗）。',
+      weekOf: '本週起於',
+      fiveHourWindow: '5 小時視窗',
+      peakWindow: '高峰視窗',
+      weeklyLimit: '每週上限（估計）',
+      window: '視窗',
+      percentOfLimit: '限額百分比（估計）',
+      status: '狀態',
+      blockPlanCustom: '自訂',
+      planCeiling: '上限',
+      plan: '方案',
+      detectedPlanChanges: '偵測到的方案變更（從使用模式推斷）：',
     },
     settings: {
       title: 'Claude Code 使用量設定',
@@ -490,6 +565,25 @@ const translations: Record<SupportedLanguage, Translations> = {
       dataDirectory: '数据目录',
       noDataMessage: '找不到使用数据。请确认 Claude Code 正在运行且配置正确。',
       errorMessage: '加载使用数据时发生错误。请检查您的配置。',
+      blocks: '5 小时窗口',
+      blocksBreakdown: '每周 5 小时使用窗口',
+      blocksEstimateNote:
+        '窗口是根据您的本地日志重建的。百分比为估计值——Anthropic 不会存储历史限额。数值以您最大的窗口为基准缩放；当前进行中的窗口（•）在可用时会以 /usage 的实时数值校准。',
+      blockActive: '进行中',
+      blockClosed: '已结束',
+      blockLivePercent: '来自 Anthropic /usage 的实时数值。',
+      blockEstimatedPercent: '根据 token 使用量估算（相对于您的峰值窗口）。',
+      weekOf: '本周始于',
+      fiveHourWindow: '5 小时窗口',
+      peakWindow: '峰值窗口',
+      weeklyLimit: '每周上限（估计）',
+      window: '窗口',
+      percentOfLimit: '限额百分比（估计）',
+      status: '状态',
+      blockPlanCustom: '自定义',
+      planCeiling: '上限',
+      plan: '套餐',
+      detectedPlanChanges: '检测到的套餐变更（根据使用模式推断）：',
     },
     settings: {
       title: 'Claude Code 使用量设置',
@@ -592,6 +686,25 @@ const translations: Record<SupportedLanguage, Translations> = {
       dataDirectory: 'データディレクトリ',
       noDataMessage: '使用データが見つかりません。Claude Code が実行され、正しく設定されていることを確認してください。',
       errorMessage: '使用データの読み込み中にエラーが発生しました。設定を確認してください。',
+      blocks: '5時間ウィンドウ',
+      blocksBreakdown: '週ごとの5時間使用ウィンドウ',
+      blocksEstimateNote:
+        'ウィンドウはローカルログから再構築しています。パーセンテージは推定値です——Anthropic は過去の上限を保存しません。最大ウィンドウを基準にスケーリングし、進行中のウィンドウ（•）は利用可能な場合 /usage のライブ値で補正します。',
+      blockActive: '進行中',
+      blockClosed: '終了',
+      blockLivePercent: 'Anthropic /usage のライブ値。',
+      blockEstimatedPercent: 'トークン使用量からの推定（ピークウィンドウ比）。',
+      weekOf: '週の開始',
+      fiveHourWindow: '5時間ウィンドウ',
+      peakWindow: 'ピークウィンドウ',
+      weeklyLimit: '週間上限（推定）',
+      window: 'ウィンドウ',
+      percentOfLimit: '上限に対する％（推定）',
+      status: 'ステータス',
+      blockPlanCustom: 'カスタム',
+      planCeiling: '上限',
+      plan: 'プラン',
+      detectedPlanChanges: '検出されたプラン変更（使用状況から推定）：',
     },
     settings: {
       title: 'Claude Code 使用量設定',
@@ -694,6 +807,25 @@ const translations: Record<SupportedLanguage, Translations> = {
       dataDirectory: '데이터 디렉토리',
       noDataMessage: '사용 데이터를 찾을 수 없습니다. Claude Code가 실행 중이고 올바르게 구성되었는지 확인하세요.',
       errorMessage: '사용 데이터를 로드하는 중 오류가 발생했습니다. 구성을 확인하세요.',
+      blocks: '5시간 창',
+      blocksBreakdown: '주별 5시간 사용 창',
+      blocksEstimateNote:
+        '창은 로컬 로그에서 재구성됩니다. 백분율은 추정치입니다 — Anthropic은 과거 한도를 저장하지 않습니다. 가장 큰 창을 기준으로 스케일링하며, 진행 중인 창(•)은 가능한 경우 /usage 실시간 값으로 보정됩니다.',
+      blockActive: '진행 중',
+      blockClosed: '종료됨',
+      blockLivePercent: 'Anthropic /usage의 실시간 값.',
+      blockEstimatedPercent: '토큰 사용량 기반 추정(최대 창 대비).',
+      weekOf: '주 시작',
+      fiveHourWindow: '5시간 창',
+      peakWindow: '최대 창',
+      weeklyLimit: '주간 한도(추정)',
+      window: '창',
+      percentOfLimit: '한도 대비 %(추정)',
+      status: '상태',
+      blockPlanCustom: '사용자 정의',
+      planCeiling: '상한선',
+      plan: '플랜',
+      detectedPlanChanges: '감지된 플랜 변경(사용 패턴에서 추론):',
     },
     settings: {
       title: 'Claude Code 사용량 설정',

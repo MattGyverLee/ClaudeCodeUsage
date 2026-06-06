@@ -136,6 +136,25 @@
           "type": "boolean",
           "default": false,
           "description": "Skip the dashboard webview on automatic refreshes (status bar still updates). When enabled, the dashboard only updates when you run 'Refresh Usage Data' manually — handy if a constantly-reloading dashboard interferes with reading numbers while an agent is actively writing."
+        },
+        "claudeCodeUsage.usagePlan": {
+          "type": "string",
+          "enum": ["auto", "pro", "max5x", "max20x", "team", "custom"],
+          "enumDescriptions": [
+            "Auto-detect plan from usage patterns (recommended). Blocks whose token count clearly exceeds the Pro ceiling are assigned Max.",
+            "Claude Pro — community-measured ceiling: ~44k tokens/5h (pre-May 2026) or ~88k (post-May 2026 doubling).",
+            "Claude Max 5× — community-measured ceiling: ~88k tokens/5h (pre-May 2026) or ~176k (post).",
+            "Claude Max 20× — community-measured ceiling: ~220k tokens/5h (pre-May 2026) or ~440k (post).",
+            "Team Premium / non-profit Team seat with Claude Code — 6.25× the Pro ceiling: ~275k tokens/5h (pre-May 2026) or ~550k (post).",
+            "Use a custom token ceiling — set claudeCodeUsage.customTokenLimit."
+          ],
+          "default": "auto",
+          "description": "Which plan ceiling to use as '100%' in the 5-Hour Windows tab. Community-measured values (Anthropic does not publish absolute limits). 'auto' infers the plan from usage history."
+        },
+        "claudeCodeUsage.customTokenLimit": {
+          "type": "number",
+          "default": 0,
+          "description": "Custom token ceiling per 5-hour window (used when claudeCodeUsage.usagePlan = 'custom'). Set to 0 to disable."
         }
       }
     },

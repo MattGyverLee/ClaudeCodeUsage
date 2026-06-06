@@ -143,6 +143,11 @@ export interface ExtensionConfig {
   // Use when the constantly-reloading dashboard interferes with reading
   // numbers while an agent is actively writing.
   pauseDashboardRefresh: boolean;
+  // Which plan ceiling to use for the 5-hour windows tab.
+  // 'auto' infers the plan from usage patterns.
+  usagePlan: 'auto' | 'pro' | 'max5x' | 'max20x' | 'team' | 'custom';
+  // Token ceiling per 5-hour window when usagePlan = 'custom'.
+  customTokenLimit: number;
 }
 
 export interface ModelPricing {
@@ -162,6 +167,61 @@ export interface BranchUsage {
   sessionCount: number;
   lastSeen: Date;
   data: UsageData;
+}
+
+// A reconstructed 5-hour usage window ("block"), rebuilt from JSONL timestamps
+// the same way ccusage does. Anthropic does not store the historical
+// percentage anywhere local, so `percent` is an ESTIMATE based on
+// community-measured plan ceilings (published limits are unofficial but
+// well-documented from user measurements). The `percentIsLive` flag marks the
+// active window when the real /usage utilisation is available to override it.
+export interface FiveHourBlock {
+  // Exact first-message timestamp (no hour-flooring), and its hard end
+  // (start + 5h). `lastActivity` is the timestamp of the final message.
+  start: Date;
+  end: Date;
+  lastActivity: Date;
+  // True when `end` is still in the future (this is the window you are in now).
+  isActive: boolean;
+  data: UsageData;
+  // Tokens counted toward the limit (input + output + cache create + cache read).
+  limitTokens: number;
+  // Plan ceiling used as 100% for this block (community-measured, unofficial).
+  planLimit: number;
+  // Which plan was inferred for this block.
+  detectedPlan: 'pro' | 'max5x' | 'max20x' | 'team' | 'custom' | 'unknown';
+  // Estimated fraction of the limit consumed (0–100). May exceed 100 if the
+  // ceiling estimate is wrong for your specific account.
+  percent: number;
+  // True when this block's percent was set from the live OAuth utilisation.
+  percentIsLive: boolean;
+}
+
+// A calendar week (Mon–Sun) containing the 5-hour blocks that started in it.
+export interface WeeklyBlockGroup {
+  weekStart: Date;
+  weekKey: string;
+  data: UsageData;
+  blocks: FiveHourBlock[];
+  // Peak single-block percent in the week.
+  peakPercent: number;
+  // Tokens counted toward the weekly (7-day) limit this week.
+  weeklyTokens: number;
+  // Community-measured 7-day ceiling for this week's dominant plan (unofficial).
+  weeklyLimit: number;
+  // Estimated fraction of the weekly limit consumed (0–100).
+  weeklyPercent: number;
+  // Whether weeklyPercent was set from the live /usage seven_day utilisation.
+  weeklyPercentIsLive: boolean;
+  // Plan used to pick weeklyLimit ('custom'/'unknown' when not inferable).
+  weeklyPlan: 'pro' | 'max5x' | 'max20x' | 'team' | 'custom' | 'unknown';
+}
+
+// A detected transition from one plan to another, inferred from usage patterns.
+export interface PlanTransition {
+  date: Date;
+  from: 'pro' | 'max5x' | 'max20x' | 'unknown';
+  to: 'pro' | 'max5x' | 'max20x';
 }
 
 // OAuth credentials written by Claude Code at ~/.claude/.credentials.json.
