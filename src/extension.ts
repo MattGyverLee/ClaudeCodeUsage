@@ -506,12 +506,15 @@ export class ClaudeCodeUsageExtension {
       const sessionBreakdown = ClaudeDataLoader.getSessionBreakdown(records);
       const projectBreakdown = ClaudeDataLoader.getProjectBreakdown(records, undefined, config.projectGroupingMode);
       const branchBreakdown = ClaudeDataLoader.getBranchBreakdown(records);
+      // 5-hour windows grouped by week. Anchored to the live /usage utilisation
+      // when available so the active window's percentage matches Claude Code.
+      const weeklyBlockGroups = ClaudeDataLoader.getWeeklyBlockGroups(records, usageLimits);
 
       // Update UI — quota was already pushed above, so we pass it again only
       // to keep the success-path signature stable.
       this.statusBar.updateUsageData(todayData, sessionData, undefined, usageLimits);
       if (updateWebview) {
-        this.webviewProvider.updateData(sessionData, todayData, monthData, allTimeData, dailyDataForMonth, dailyDataForAllTime, hourlyDataForToday, undefined, dataDirectory, records, sessionBreakdown, projectBreakdown, contentAnalysis, branchBreakdown);
+        this.webviewProvider.updateData(sessionData, todayData, monthData, allTimeData, dailyDataForMonth, dailyDataForAllTime, hourlyDataForToday, undefined, dataDirectory, records, sessionBreakdown, projectBreakdown, contentAnalysis, branchBreakdown, weeklyBlockGroups);
       }
 
     } catch (error) {

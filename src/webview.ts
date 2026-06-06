@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { I18n } from './i18n';
 import { getModelRatesPerMillion } from './pricing';
-import { BranchUsage, ContentAnalysis, ProjectGroup, ProjectUsage, SessionData, SessionUsage, UsageData } from './types';
+import { BranchUsage, ContentAnalysis, FiveHourBlock, ProjectGroup, ProjectUsage, SessionData, SessionUsage, UsageData, WeeklyBlockGroup } from './types';
 
 export class UsageWebviewProvider {
   private panel: vscode.WebviewPanel | undefined;
@@ -22,6 +22,7 @@ export class UsageWebviewProvider {
   private projectBreakdown: ProjectGroup[] = [];
   private contentAnalysis: ContentAnalysis | null = null;
   private branchBreakdown: BranchUsage[] = [];
+  private weeklyBlockGroups: WeeklyBlockGroup[] = [];
 
   constructor(private context: vscode.ExtensionContext) {}
 
@@ -118,7 +119,8 @@ export class UsageWebviewProvider {
     sessionBreakdown: SessionUsage[] = [],
     projectBreakdown: ProjectGroup[] = [],
     contentAnalysis: ContentAnalysis | null = null,
-    branchBreakdown: BranchUsage[] = []
+    branchBreakdown: BranchUsage[] = [],
+    weeklyBlockGroups: WeeklyBlockGroup[] = []
   ): void {
     this.currentSessionData = sessionData;
     this.todayData = todayData;
@@ -137,6 +139,7 @@ export class UsageWebviewProvider {
     this.projectBreakdown = projectBreakdown;
     this.contentAnalysis = contentAnalysis;
     this.branchBreakdown = branchBreakdown;
+    this.weeklyBlockGroups = weeklyBlockGroups;
 
     if (this.panel) {
       this.updateWebview();
@@ -257,6 +260,7 @@ export class UsageWebviewProvider {
     const projects = I18n.t.popup.projects;
     const contentTab = I18n.t.popup.contentAnalysis;
     const branchesTab = I18n.t.popup.branches;
+    const blocksTab = I18n.t.popup.blocks;
 
     const todayActive = this.currentTab === 'today' ? 'active' : '';
     const monthActive = this.currentTab === 'month' ? 'active' : '';
@@ -265,6 +269,7 @@ export class UsageWebviewProvider {
     const projectsActive = this.currentTab === 'projects' ? 'active' : '';
     const contentActive = this.currentTab === 'content' ? 'active' : '';
     const branchesActive = this.currentTab === 'branches' ? 'active' : '';
+    const blocksActive = this.currentTab === 'blocks' ? 'active' : '';
 
     // The Content tab is hidden when content analysis is disabled via
     // claudeCodeUsage.enableContentAnalysis (the analyser returned null).
@@ -356,6 +361,11 @@ export class UsageWebviewProvider {
       `" onclick="showTab('branches')">` +
       branchesTab +
       `</button>
+            <button id="tab-blocks" class="tab ` +
+      blocksActive +
+      `" onclick="showTab('blocks')">` +
+      blocksTab +
+      `</button>
           </div>
 
           <div id="today" class="tab-content ` +
@@ -407,6 +417,14 @@ export class UsageWebviewProvider {
       `">
             ` +
       this.renderBranchData() +
+      `
+          </div>
+
+          <div id="blocks" class="tab-content ` +
+      blocksActive +
+      `">
+            ` +
+      this.renderBlocksData() +
       `
           </div>
         </div>
@@ -1198,6 +1216,103 @@ export class UsageWebviewProvider {
       '<tbody>' + rows + '</tbody>' +
       '</table>' +
       '</div>' +
+      '</div>'
+    );
+  }
+
+  /** A coloured percent-of-limit bar (green < 70%, amber 70-90%, red ≥ 90%). */
+  private percentBar(percent: number, isLive: boolean): string {
+    const pct = Math.max(0, percent);
+    const width = Math.min(100, pct);
+    const tone = pct >= 90 ? 'pct-high' : pct >= 70 ? 'pct-mid' : 'pct-low';
+    const label = pct.toFixed(0) + '%' + (isLive ? ' •' : '');
+    const title = isLive
+      ? I18n.t.popup.blockLivePercent
+      : I18n.t.popup.blockEstimatedPercent;
+    return (
+      '<div class="pct-bar" title="' + this.escapeHtml(title) + '">' +
+      '<div class="pct-fill ' + tone + '" style="width:' + width + '%"></div>' +
+      '<span class="pct-text">' + label + '</span>' +
+      '</div>'
+    );
+  }
+
+  /** Compact "HH:MM–HH:MM" range for a 5-hour window. */
+  private formatBlockRange(block: FiveHourBlock): string {
+    const pad = (n: number): string => String(n).padStart(2, '0');
+    const hm = (d: Date): string => pad(d.getHours()) + ':' + pad(d.getMinutes());
+    return hm(block.start) + '–' + hm(block.end);
+  }
+
+  /**
+   * "5-Hour Windows" tab: reconstructs Claude Code's rolling 5-hour usage
+   * windows from local logs and groups them by week. The percent-of-limit is an
+   * ESTIMATE (Anthropic does not store the historical percentage locally) —
+   * calibrated to the user's biggest historical window, and re-anchored to the
+   * live /usage utilisation for the active window when that data is available.
+   */
+  private renderBlocksData(): string {
+    const t = I18n.t.popup;
+    if (!this.weeklyBlockGroups || this.weeklyBlockGroups.length === 0) {
+      return '<div class="no-data"><p>' + I18n.t.popup.noDataMessage + '</p></div>';
+    }
+
+    let weeksHtml = '';
+    this.weeklyBlockGroups.forEach((week) => {
+      let blockRows = '';
+      week.blocks.forEach((b) => {
+        const statusLabel = b.isActive ? t.blockActive : t.blockClosed;
+        const statusClass = b.isActive ? 'block-active' : '';
+        blockRows +=
+          '<tr class="' + statusClass + '">' +
+          '<td class="date-cell">' + this.escapeHtml(this.formatDateTime(b.start)) + '</td>' +
+          '<td class="date-cell">' + this.escapeHtml(this.formatBlockRange(b)) + '</td>' +
+          '<td class="pct-cell">' + this.percentBar(b.percent, b.percentIsLive) + '</td>' +
+          '<td class="cost-cell">' + I18n.formatCurrency(b.data.totalCost) + '</td>' +
+          '<td class="number-cell">' + I18n.formatNumber(b.limitTokens) + '</td>' +
+          '<td class="number-cell">' + I18n.formatNumber(b.data.messageCount) + '</td>' +
+          '<td class="date-cell">' + this.escapeHtml(statusLabel) + '</td>' +
+          '</tr>';
+      });
+
+      weeksHtml +=
+        '<div class="week-group">' +
+        '<div class="week-header">' +
+        '<div class="week-title">' +
+        '<strong>' + this.escapeHtml(t.weekOf + ' ' + this.formatDateTime(week.weekStart)) + '</strong>' +
+        '<span class="week-meta">' +
+        week.blocks.length + ' × ' + this.escapeHtml(t.fiveHourWindow) + ' · ' +
+        I18n.formatCurrency(week.data.totalCost) + ' · ' +
+        I18n.formatNumber(week.data.messageCount) + ' ' + this.escapeHtml(t.messages) +
+        '</span>' +
+        '</div>' +
+        '<div class="week-peak">' +
+        '<span class="week-peak-label">' + this.escapeHtml(t.peakWindow) + '</span>' +
+        this.percentBar(week.peakPercent, false) +
+        '</div>' +
+        '</div>' +
+        '<div class="daily-table-container">' +
+        '<table class="daily-table">' +
+        '<thead><tr>' +
+        '<th>' + t.startTime + '</th>' +
+        '<th>' + t.window + '</th>' +
+        '<th>' + t.percentOfLimit + '</th>' +
+        '<th>' + t.cost + '</th>' +
+        '<th>' + t.totalTokens + '</th>' +
+        '<th>' + t.messages + '</th>' +
+        '<th>' + t.status + '</th>' +
+        '</tr></thead>' +
+        '<tbody>' + blockRows + '</tbody>' +
+        '</table>' +
+        '</div>' +
+        '</div>';
+    });
+
+    return (
+      '<div class="daily-breakdown">' +
+      '<h3>' + t.blocksBreakdown + '</h3>' +
+      '<p class="estimate-note">' + this.escapeHtml(t.blocksEstimateNote) + '</p>' +
+      weeksHtml +
       '</div>'
     );
   }
@@ -2458,6 +2573,83 @@ export class UsageWebviewProvider {
 
       .cf-5 {
         background: var(--vscode-charts-red);
+      }
+
+      /* --- 5-hour windows ("blocks") tab --- */
+      .estimate-note {
+        font-size: 0.85em;
+        opacity: 0.8;
+        margin: 0 0 16px 0;
+        line-height: 1.4;
+        padding: 8px 10px;
+        border-left: 3px solid var(--vscode-charts-yellow, #cca700);
+        background: var(--vscode-textBlockQuote-background, rgba(127,127,127,0.1));
+      }
+      .week-group {
+        margin-bottom: 22px;
+      }
+      .week-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin-bottom: 6px;
+      }
+      .week-meta {
+        opacity: 0.8;
+        margin-left: 10px;
+        font-size: 0.88em;
+      }
+      .week-peak {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 220px;
+      }
+      .week-peak-label {
+        font-size: 0.82em;
+        opacity: 0.75;
+        white-space: nowrap;
+      }
+      .pct-cell {
+        min-width: 160px;
+      }
+      .pct-bar {
+        position: relative;
+        height: 16px;
+        min-width: 120px;
+        border-radius: 8px;
+        background: var(--vscode-input-background, rgba(127,127,127,0.2));
+        overflow: hidden;
+      }
+      .week-peak .pct-bar {
+        flex: 1;
+      }
+      .pct-fill {
+        position: absolute;
+        top: 0;
+        left: 0;
+        height: 100%;
+        border-radius: 8px;
+        transition: width 0.3s ease;
+      }
+      .pct-low { background: var(--vscode-charts-green, #388a34); }
+      .pct-mid { background: var(--vscode-charts-yellow, #cca700); }
+      .pct-high { background: var(--vscode-charts-red, #d13438); }
+      .pct-text {
+        position: relative;
+        z-index: 1;
+        display: block;
+        text-align: center;
+        font-size: 0.78em;
+        line-height: 16px;
+        font-weight: 600;
+        color: var(--vscode-foreground);
+        mix-blend-mode: var(--vscode-blend, normal);
+      }
+      tr.block-active td {
+        background: var(--vscode-list-activeSelectionBackground, rgba(127,127,200,0.15));
       }
     `;
   }

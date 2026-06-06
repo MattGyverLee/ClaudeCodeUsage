@@ -164,6 +164,44 @@ export interface BranchUsage {
   data: UsageData;
 }
 
+// A reconstructed 5-hour usage window ("block"), rebuilt from JSONL timestamps
+// the same way ccusage does. Anthropic does not store the historical
+// percentage anywhere local, so `percent` is an ESTIMATE: block tokens divided
+// by a reference limit (the user's biggest historical block, optionally
+// re-anchored to the live /usage utilisation for the active block).
+export interface FiveHourBlock {
+  // Block window start (first activity, floored to the hour) and its hard end
+  // (start + 5h). `lastActivity` is the timestamp of the final message in the
+  // block — usually well before `end`.
+  start: Date;
+  end: Date;
+  lastActivity: Date;
+  // True when `end` is still in the future (this is the window you are in now).
+  isActive: boolean;
+  data: UsageData;
+  // Tokens counted toward the limit (input + output + cache create + cache read).
+  limitTokens: number;
+  // Estimated fraction of the limit consumed (0-100+). See the interface note —
+  // this is derived, not a stored Anthropic value.
+  percent: number;
+  // True when this block's percent was anchored to the live OAuth utilisation
+  // rather than to the personal-peak reference (only the active block can be).
+  percentIsLive: boolean;
+}
+
+// A calendar week (Mon-Sun) containing the 5-hour blocks that started in it,
+// plus an aggregate. `percent` is the peak block percentage within the week —
+// i.e. the closest that week came to a 5-hour cut-off.
+export interface WeeklyBlockGroup {
+  // Monday 00:00 of the week, and a YYYY-MM-DD key for it.
+  weekStart: Date;
+  weekKey: string;
+  data: UsageData;
+  blocks: FiveHourBlock[];
+  // Peak single-block percent in the week (the week's worst 5h crunch).
+  peakPercent: number;
+}
+
 // OAuth credentials written by Claude Code at ~/.claude/.credentials.json.
 export interface ClaudeCredentials {
   claudeAiOauth: {

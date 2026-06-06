@@ -7,15 +7,22 @@ import * as path from 'path';
 import { calculateCostBreakdown } from './pricing';
 import {
   BranchUsage,
+  ClaudeApiUsageResponse,
   ClaudeUsageRecord,
   ContentAnalysis,
   ContentSlice,
+  FiveHourBlock,
   ProjectGroup,
   ProjectUsage,
   SessionData,
   SessionUsage,
   UsageData,
+  WeeklyBlockGroup,
 } from './types';
+
+// A reconstructed 5-hour window lasts this long, mirroring Claude Code's
+// rolling subscription limit (and ccusage's `blocks` view).
+const FIVE_HOUR_BLOCK_MS = 5 * 60 * 60 * 1000;
 
 // Constants
 const CLAUDE_CONFIG_DIR_ENV = 'CLAUDE_CONFIG_DIR';
@@ -780,6 +787,203 @@ export class ClaudeDataLoader {
       .filter((s) => s.data.messageCount > 0)
       .sort((a, b) => b.endTime.getTime() - a.endTime.getTime())
       .slice(0, limit);
+  }
+
+  // --- 5-hour window ("block") reconstruction ---------------------------------
+  // Anthropic enforces a rolling 5-hour usage limit but does NOT persist the
+  // historical percentage anywhere on disk (the /usage endpoint only returns
+  // the *current* window; the JSONL logs hold raw token counts, never the
+  // percentage). So we reconstruct the windows from timestamps exactly the way
+  // ccusage's `blocks` view does, and *estimate* the percentage. The estimate
+  // is calibrated to the user's biggest historical window, and — when the live
+  // /usage utilisation is available — re-anchored so the active window's
+  // percentage matches what Claude Code itself reports.
+
+  /** Total tokens on a UsageData that count toward the rolling limit. */
+  private static limitTokensOf(d: UsageData): number {
+    return d.totalInputTokens + d.totalOutputTokens + d.totalCacheCreationTokens + d.totalCacheReadTokens;
+  }
+
+  /** Floor a timestamp (ms) to the top of its hour, matching ccusage's UTC-hour blocks. */
+  private static floorToHour(ms: number): number {
+    return Math.floor(ms / (60 * 60 * 1000)) * (60 * 60 * 1000);
+  }
+
+  /**
+   * Group records into rolling 5-hour windows. A window starts at the first
+   * message (floored to the hour) and a new window begins when a record lands
+   * 5h after the window start OR more than 5h after the previous record — so
+   * windows are non-consecutive, matching how the real limit behaves.
+   */
+  private static buildRawBlocks(records: ClaudeUsageRecord[]): { startMs: number; records: ClaudeUsageRecord[] }[] {
+    const dated = records
+      .map((r) => ({ r, t: new Date(r.timestamp).getTime() }))
+      .filter((x) => !isNaN(x.t))
+      .sort((a, b) => a.t - b.t);
+
+    const blocks: { startMs: number; records: ClaudeUsageRecord[] }[] = [];
+    let startMs = 0;
+    let lastMs = 0;
+    for (const { r, t } of dated) {
+      const startNew =
+        blocks.length === 0 || t - startMs >= FIVE_HOUR_BLOCK_MS || t - lastMs >= FIVE_HOUR_BLOCK_MS;
+      if (startNew) {
+        startMs = this.floorToHour(t);
+        blocks.push({ startMs, records: [] });
+      }
+      blocks[blocks.length - 1].records.push(r);
+      lastMs = t;
+    }
+    return blocks;
+  }
+
+  /**
+   * Reconstruct the user's 5-hour usage windows with an estimated
+   * percent-of-limit for each. See the section comment above for why the
+   * percentage is an estimate rather than a stored value.
+   * @param usageLimits Optional live /usage response; when present and the
+   *   most recent window is still active, its percentage is set to the real
+   *   utilisation and every window is rescaled to the implied real limit.
+   */
+  static getFiveHourBlocks(
+    records: ClaudeUsageRecord[],
+    usageLimits?: ClaudeApiUsageResponse | null
+  ): FiveHourBlock[] {
+    const raw = this.buildRawBlocks(records);
+    if (raw.length === 0) {
+      return [];
+    }
+
+    const now = Date.now();
+    const blocks: FiveHourBlock[] = raw.map(({ startMs, records: recs }) => {
+      const data = this.calculateUsageData(recs);
+      const timestamps = recs.map((r) => new Date(r.timestamp).getTime()).filter((t) => !isNaN(t));
+      const lastActivityMs = timestamps.length > 0 ? Math.max(...timestamps) : startMs;
+      const end = new Date(startMs + FIVE_HOUR_BLOCK_MS);
+      return {
+        start: new Date(startMs),
+        end,
+        lastActivity: new Date(lastActivityMs),
+        isActive: end.getTime() > now,
+        data,
+        limitTokens: this.limitTokensOf(data),
+        percent: 0,
+        percentIsLive: false,
+      };
+    });
+
+    // Reference limit = the biggest window the user has ever had (ccusage's
+    // `--token-limit max`). This is what "100%" means absent better info.
+    let reference = blocks.reduce((max, b) => Math.max(max, b.limitTokens), 0);
+
+    // If the live /usage utilisation is available and the newest window is
+    // still active, derive the real token limit from it and rescale everything
+    // so the numbers line up with what Claude Code reports.
+    const activeBlock = blocks.find((b) => b.isActive);
+    const liveUtil = usageLimits?.five_hour?.utilization;
+    let liveAnchored = false;
+    if (activeBlock && typeof liveUtil === 'number' && liveUtil > 0 && activeBlock.limitTokens > 0) {
+      const impliedLimit = activeBlock.limitTokens / (liveUtil / 100);
+      if (impliedLimit > 0) {
+        reference = impliedLimit;
+        liveAnchored = true;
+      }
+    }
+
+    for (const b of blocks) {
+      b.percent = reference > 0 ? (b.limitTokens / reference) * 100 : 0;
+    }
+    if (liveAnchored && activeBlock) {
+      activeBlock.percent = liveUtil as number; // exact live value for the current window
+      activeBlock.percentIsLive = true;
+    }
+
+    // Newest first for display.
+    return blocks.sort((a, b) => b.start.getTime() - a.start.getTime());
+  }
+
+  /** Add one UsageData's totals into another (used to aggregate a week). */
+  private static addUsageData(target: UsageData, src: UsageData): void {
+    target.totalInputTokens += src.totalInputTokens;
+    target.totalOutputTokens += src.totalOutputTokens;
+    target.totalCacheCreationTokens += src.totalCacheCreationTokens;
+    target.totalCacheReadTokens += src.totalCacheReadTokens;
+    target.totalCost += src.totalCost;
+    target.costBreakdown.input += src.costBreakdown.input;
+    target.costBreakdown.output += src.costBreakdown.output;
+    target.costBreakdown.cacheWrite += src.costBreakdown.cacheWrite;
+    target.costBreakdown.cacheRead += src.costBreakdown.cacheRead;
+    target.messageCount += src.messageCount;
+    for (const [model, m] of Object.entries(src.modelBreakdown)) {
+      if (!target.modelBreakdown[model]) {
+        target.modelBreakdown[model] = { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, cost: 0, count: 0 };
+      }
+      const tm = target.modelBreakdown[model];
+      tm.inputTokens += m.inputTokens;
+      tm.outputTokens += m.outputTokens;
+      tm.cacheCreationTokens += m.cacheCreationTokens;
+      tm.cacheReadTokens += m.cacheReadTokens;
+      tm.cost += m.cost;
+      tm.count += m.count;
+    }
+  }
+
+  /** Empty UsageData accumulator. */
+  private static emptyUsageData(): UsageData {
+    return {
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCacheCreationTokens: 0,
+      totalCacheReadTokens: 0,
+      totalCost: 0,
+      costBreakdown: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+      messageCount: 0,
+      modelBreakdown: {},
+    };
+  }
+
+  /**
+   * Reconstruct 5-hour windows and group them by calendar week (Mon-Sun).
+   * Each week carries its own aggregate usage and the peak single-window
+   * percentage reached that week. Weeks are returned newest first.
+   */
+  static getWeeklyBlockGroups(
+    records: ClaudeUsageRecord[],
+    usageLimits?: ClaudeApiUsageResponse | null
+  ): WeeklyBlockGroup[] {
+    const blocks = this.getFiveHourBlocks(records, usageLimits);
+    if (blocks.length === 0) {
+      return [];
+    }
+
+    const byWeek: Record<string, { weekStart: Date; blocks: FiveHourBlock[] }> = {};
+    for (const block of blocks) {
+      const d = block.start;
+      const day = d.getDay(); // 0=Sun..6=Sat
+      const diffToMonday = day === 0 ? -6 : 1 - day;
+      const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate() + diffToMonday);
+      monday.setHours(0, 0, 0, 0);
+      const pad = (n: number): string => String(n).padStart(2, '0');
+      const key = `${monday.getFullYear()}-${pad(monday.getMonth() + 1)}-${pad(monday.getDate())}`;
+      if (!byWeek[key]) {
+        byWeek[key] = { weekStart: monday, blocks: [] };
+      }
+      byWeek[key].blocks.push(block);
+    }
+
+    const groups: WeeklyBlockGroup[] = Object.entries(byWeek).map(([weekKey, { weekStart, blocks: weekBlocks }]) => {
+      const data = this.emptyUsageData();
+      let peakPercent = 0;
+      for (const b of weekBlocks) {
+        this.addUsageData(data, b.data);
+        peakPercent = Math.max(peakPercent, b.percent);
+      }
+      // Newest block first within the week.
+      weekBlocks.sort((a, b) => b.start.getTime() - a.start.getTime());
+      return { weekStart, weekKey, data, blocks: weekBlocks, peakPercent };
+    });
+
+    return groups.sort((a, b) => b.weekStart.getTime() - a.weekStart.getTime());
   }
 
   /** Normalise a path for case-insensitive comparison and grouping. */
